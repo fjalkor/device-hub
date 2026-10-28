@@ -12,7 +12,7 @@ import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorato
  * [DeviceConnection] backed by a WebSocket session.
  *
  * Spring's WebSocketSession must not be written to from several threads at once, but commands
- * (REST thread) and closes (scheduler, WebSocket thread) can happen concurrently. The decorator
+ * (HTTP request thread) and closes (scheduler, WebSocket thread) can happen concurrently. The decorator
  * serializes those writes and drops the connection if a device stops reading.
  */
 class WebSocketDeviceConnection(session: WebSocketSession, private val codec: ProtocolCodec) : DeviceConnection {

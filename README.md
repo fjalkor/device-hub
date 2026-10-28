@@ -6,15 +6,15 @@ Simulierte Messgeräte verbinden sich dauerhaft per WebSocket mit einem Backend,
 
 ```
 .
-├── backend/     Spring Boot (Kotlin): Geräteverbindungen, REST/SSE-API, Web-UI
+├── backend/     Spring Boot (Kotlin): Geräteverbindungen, HTTP-API mit SSE-Stream, Web-UI
 └── simulator/   eigenständiges Kotlin-Programm, simuliert N Geräte
 ```
 
-Backend und Simulator sind **zwei unabhängige Maven-Projekte ohne gemeinsamen Code**. Ein echtes Messgerät kennt die Klassen des Backends nicht. Es spricht nur das unten dokumentierte JSON-Protokoll. Der Simulator verhält sich genauso: Er baut seine Nachrichten selbst als JSON und hängt in keiner Form vom Backend ab. Der einzige Vertrag zwischen beiden ist das [Protokoll](#protokoll).
+Backend und Simulator sind **zwei unabhängige Maven-Projekte ohne gemeinsamen Code**. Ein Messgerät kennt nur das unten dokumentierte [JSON-Protokoll](#protokoll).
 
 ## Starten
 
-Voraussetzung: JDK 21 oder neuer. Maven ist nicht nötig, jedes Projekt bringt den Maven Wrapper mit.
+Voraussetzung: JDK 21 oder neuer.
 
 ```bash
 cd backend && ./mvnw spring-boot:run
@@ -75,7 +75,7 @@ Jeder Befehl trägt eine `command_id`. Das Gerät antwortet darauf mit genau ein
 - Eine Nachricht, die kein gültiges JSON ist oder nicht zum Protokoll passt, wird geloggt und **ignoriert**. Die Verbindung bleibt offen.
 - `telemetry` oder `ack` vor `register` ist ein Protokollverstoß, und die Verbindung wird mit Code `1008` geschlossen.
 - Meldet sich ein Gerät mit einem Namen an, der bereits verbunden ist, ersetzt die neue Verbindung die alte (z. B. bei einem Reconnect, bevor die alte als tot erkannt wurde).
-- Ein Gerät gilt als **offline**, wenn die Verbindung geschlossen wird oder es länger als `device-hub.offline-after` (Standard 15 s) bzw. 3 × sein Messintervall nichts sendet. Das erkennt auch halboffene Verbindungen, etwa nach einem Stromausfall.
+- Ein Gerät gilt als **offline**, wenn die Verbindung geschlossen wird oder es länger als `device-hub.offline-after` (Standard 15 s) bzw. 3 × sein Messintervall nichts sendet.
 - Das Messintervall eines Geräts kennt das Backend erst, wenn das Gerät ein `set_interval` bestätigt hat. Nach jedem `register` gilt es wieder als unbekannt, weil das Gerät neu gestartet sein kann.
 - Ein Befehl ohne `ack` gilt nach `device-hub.command-timeout` (Standard 10 s) als unbeantwortet.
 
@@ -86,7 +86,7 @@ com.example.devicehub
 ├── protocol/    Nachrichtentypen + ProtocolCodec (JSON ↔ Typen, eigener ObjectMapper)
 ├── device/      DeviceRegistry (Zustand aller Geräte), DeviceConnection, Timeout-Job
 ├── websocket/   /ws/device: Handler, Konfiguration, WebSocket-Implementierung von DeviceConnection
-└── api/         REST-Endpunkte und SSE-Stream für die Weboberfläche
+└── api/         HTTP-Endpunkte und SSE-Stream für die Weboberfläche
 ```
 
 ```
@@ -125,13 +125,13 @@ cd simulator && ./mvnw test
 ## Designentscheidungen
 
 - **Raw WebSocket statt STOMP** für Geräte: Das Protokoll bleibt einfach und kommt ohne Messaging-Framework auf dem Gerät aus.
-- **Server-Sent Events + REST** für die UI: Live-Daten fließen nur in Richtung Browser, Befehle gehen per `POST`.
+- **Server-Sent Events + HTTP-API** für die UI: Live-Daten fließen nur in Richtung Browser, Befehle gehen per `POST`.
 - **Kein geteilter Code** zwischen Backend und Simulator (siehe oben).
 - **`DeviceConnection` als Interface**: Die Registry kennt keine WebSockets. Das macht sie ohne Server testbar und den Transport austauschbar (z. B. MQTT).
 - **Ein Lock in der Registry**: Alle Zustandsänderungen laufen unter einem Lock, so bleiben Geräte und Verbindungen konsistent. Senden, Schließen und Events passieren außerhalb, damit ein langsames Gerät die anderen nicht blockiert. Bei wenigen Geräten ist das einfacher und sicherer als feingranulare Nebenläufigkeit.
 - **`ConcurrentWebSocketSessionDecorator`**: Spring-WebSocket-Sessions sind nicht thread-safe beim Senden, Befehle (HTTP-Thread) und Schließen (Scheduler) können aber gleichzeitig passieren.
 - **Eigene DTOs für die HTTP-API** (`DeviceView`, `CommandView`): Die Protokolltypen gelangen nie in die API. Geräteprotokoll und UI-Schnittstelle können sich unabhängig voneinander ändern.
-- **Eigener ObjectMapper für das Protokoll**: Das Geräteprotokoll ändert sich nicht, wenn jemand die JSON-Konfiguration der REST-API anpasst.
+- **Eigener ObjectMapper für das Protokoll**: Das Geräteprotokoll ändert sich nicht, wenn jemand die JSON-Konfiguration der HTTP-API anpasst.
 - **Zustand nur im Speicher**: Nach einem Neustart melden sich die Geräte per Reconnect neu an, der Verlauf geht verloren.
 
 ## Bekannte Grenzen

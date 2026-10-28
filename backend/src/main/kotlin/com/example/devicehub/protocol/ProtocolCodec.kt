@@ -10,7 +10,7 @@ import tools.jackson.module.kotlin.kotlinModule
  * Converts between the JSON wire format and the protocol types.
  *
  * Uses its own mapper instead of Spring's, so the device protocol does not change
- * when someone reconfigures JSON for the REST API.
+ * when someone reconfigures JSON for the HTTP API.
  */
 @Component
 class ProtocolCodec {
