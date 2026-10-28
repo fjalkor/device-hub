@@ -14,6 +14,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.fail
 
@@ -90,10 +91,33 @@ class SimulatorTest {
         hub.skipUntil("register", timeoutSeconds = 5)
     }
 
-    private fun startSimulator(id: Int = 1, connections: Int = 1) {
+    @Test
+    fun `rejecting device answers valid commands with an error`() {
+        startSimulator(behavior = Behavior.REJECTING)
+        hub.skipUntil("telemetry")
+
+        hub.send("""{"type":"set_interval","command_id":"c-1","new_interval_millis":1000}""")
+
+        val ack = hub.skipUntil("ack")
+        assertEquals(JsonPrimitive("c-1"), ack["command_id"])
+        assertNotNull(ack["error"] as? JsonPrimitive)
+    }
+
+    @Test
+    fun `deaf device never acks`() {
+        startSimulator(behavior = Behavior.DEAF)
+        hub.skipUntil("telemetry")
+
+        hub.send("""{"type":"set_interval","command_id":"c-1","new_interval_millis":1000}""")
+
+        val types = hub.messagesWithin(millis = 1_000).map { it["type"] }
+        assertFalse(JsonPrimitive("ack") in types)
+    }
+
+    private fun startSimulator(id: Int = 1, connections: Int = 1, behavior: Behavior = Behavior.NORMAL) {
         repeat(connections) { server.enqueue(MockResponse.Builder().webSocketUpgrade(hub).build()) }
         val url = server.url("/ws/device").toString().replaceFirst("http", "ws")
-        Simulator(OkHttpClient(), id, url, json).start()
+        Simulator(OkHttpClient(), id, url, json, behavior).start()
     }
 
     /** Server side of the connection: records what the simulator sends. */
@@ -121,6 +145,17 @@ class SimulatorTest {
 
         fun nextMessage(timeoutSeconds: Long = 3): JsonObject =
             messages.poll(timeoutSeconds, TimeUnit.SECONDS)?.toJsonObject() ?: fail("no message within $timeoutSeconds s")
+
+        /** Everything the simulator sends within the given time. */
+        fun messagesWithin(millis: Long): List<JsonObject> {
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis)
+            val received = mutableListOf<JsonObject>()
+            while (true) {
+                val remaining = deadline - System.nanoTime()
+                if (remaining <= 0) return received
+                messages.poll(remaining, TimeUnit.NANOSECONDS)?.let { received += it.toJsonObject() }
+            }
+        }
 
         /** Skips telemetry and other messages until one of the given type arrives. */
         fun skipUntil(type: String, timeoutSeconds: Long = 3): JsonObject {

@@ -25,7 +25,11 @@ fun main(args: Array<String>) {
         .pingInterval(10, TimeUnit.SECONDS)
         .build()
 
-    repeat(deviceCount) { Simulator(client, it, hubUrl, json).start() }
+    repeat(deviceCount) {
+        val behavior = behaviorFor(it, deviceCount)
+        if (behavior != Behavior.NORMAL) logger.info("device-$it is $behavior")
+        Simulator(client, it, hubUrl, json, behavior).start()
+    }
 
     Thread.currentThread().join()
 }

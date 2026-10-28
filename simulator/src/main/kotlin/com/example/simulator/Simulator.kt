@@ -25,6 +25,7 @@ class Simulator(
     private val id: Int,
     private val hubUrl: String,
     private val json: Json,
+    private val behavior: Behavior = Behavior.NORMAL,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -34,6 +35,10 @@ class Simulator(
     private var intervalMillis = 5_000L
 
     private var backoffMillis = 1_000L
+
+    /** Set once a HANGING device stops responding; from then on it does nothing at all. */
+    @Volatile
+    private var hung = false
 
     fun start() {
         client.newWebSocket(
@@ -56,9 +61,13 @@ class Simulator(
     }
 
     private fun onMessage(ws: WebSocket, text: String) {
+        if (behavior == Behavior.DEAF || hung) return
+
         when (val result = text.jsonToCommand(json)) {
             is ParseResult.InvalidJSON -> ws.send(Message.Ack(error = result.error).asJson(json))
             is ParseResult.InvalidValue -> ws.send(Message.Ack(commandId = result.commandId, error = result.error).asJson(json))
+            is ParseResult.Success if behavior == Behavior.REJECTING ->
+                ws.send(Message.Ack(commandId = result.command.commandId, error = "device is in maintenance mode").asJson(json))
             is ParseResult.Success -> {
                 execute(result.command)
                 ws.send(Message.Ack(commandId = result.command.commandId).asJson(json))
@@ -85,8 +94,23 @@ class Simulator(
         telemetryJob?.cancel()
 
         telemetryJob = scope.launch {
+            if (behavior == Behavior.FLAKY) {
+                launch {
+                    delay(Random.nextLong(FLAKY_MIN_UPTIME_MILLIS, FLAKY_MAX_UPTIME_MILLIS))
+                    logger.info("[$id] flaky: dropping the connection")
+                    ws.cancel()
+                }
+            }
+
+            var sent = 0
             while (isActive) {
+                if (behavior == Behavior.HANGING && sent == HANGING_AFTER_MESSAGES) {
+                    logger.info("[$id] hanging: no more messages, connection stays open")
+                    hung = true
+                    return@launch
+                }
                 ws.send(Message.Telemetry(status = "active", value = Random.nextDouble(0.0, 100.0)).asJson(json))
+                sent++
                 delay(intervalMillis)
             }
         }
@@ -94,6 +118,7 @@ class Simulator(
 
     private fun scheduleReconnect() {
         telemetryJob?.cancel()
+        if (hung) return
 
         val wait = (backoffMillis * Random.nextDouble(0.8, 1.2)).toLong()
         backoffMillis = (backoffMillis * 2).coerceAtMost(MAXIMUM_BACKOFF_MILLIS)
@@ -126,6 +151,9 @@ class Simulator(
     companion object {
         private const val MAXIMUM_BACKOFF_MILLIS = 30_000L
         private const val MINIMUM_BACKOFF_MILLIS = 1_000L
+        private const val HANGING_AFTER_MESSAGES = 3
+        private const val FLAKY_MIN_UPTIME_MILLIS = 10_000L
+        private const val FLAKY_MAX_UPTIME_MILLIS = 20_000L
     }
 }
 
