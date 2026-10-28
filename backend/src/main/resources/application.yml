@@ -4,3 +4,11 @@ spring:
 
 server:
   port: 8080
+
+device-hub:
+#  # A device is marked offline after this long without a message (or 3x its interval, if larger).
+#  offline-after: 15s
+#  # A command without ack is marked as timed out after this long.
+#  command-timeout: 10s
+  # How often the timeouts above are checked.
+  timeout-check-interval: 2s

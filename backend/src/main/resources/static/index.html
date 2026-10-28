@@ -4,9 +4,184 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Device Hub</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --surface: #fff; --text: #1d2330; --muted: #6b7280; --border: #e3e6eb;
+      --online: #15803d; --offline: #9ca3af; --error: #b91c1c; --pending: #b45309; --accent: #2563eb;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111418; --surface: #1a1f26; --text: #e6e8eb; --muted: #9aa3ae; --border: #2a313b;
+        --online: #4ade80; --offline: #6b7280; --error: #f87171; --pending: #fbbf24; --accent: #60a5fa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
+    main { max-width: 1200px; margin: 0 auto; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 22px; }
+    .muted { color: var(--muted); font-size: 13px; }
+
+    #devices { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+    .card.is-offline .value, .card.is-offline dd { color: var(--muted); }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .name { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--offline); }
+    .online .dot { background: var(--online); }
+    .value { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+    dt { color: var(--muted); }
+    dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+    .commands { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .commands h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+    form { display: flex; gap: 6px; }
+    input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+    button { padding: 5px 10px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+    button.secondary { background: transparent; color: var(--accent); }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+
+    .cmd-PENDING { color: var(--pending); }
+    .cmd-ACKNOWLEDGED { color: var(--online); }
+    .cmd-REJECTED, .cmd-TIMED_OUT, .error { color: var(--error); }
+    .empty { padding: 24px; text-align: center; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+  </style>
 </head>
 <body>
-  <h1>Device Hub</h1>
-  <p>Geräteliste folgt.</p>
+<main>
+  <header>
+    <h1>Device Hub</h1>
+    <span id="connection" class="muted">verbinde…</span>
+  </header>
+
+  <div id="devices"></div>
+  <div id="empty" class="empty">Noch keine Geräte verbunden.</div>
+  <p id="error" class="error" role="alert"></p>
+</main>
+
+<script>
+  const devices = new Map();   // name -> latest DeviceState
+  const cards = new Map();     // name -> card element, kept so typing in the input survives updates
+  const container = document.getElementById('devices');
+
+  const COMMAND_LABELS = { PENDING: 'wartet', ACKNOWLEDGED: 'bestätigt', REJECTED: 'abgelehnt', TIMED_OUT: 'keine Antwort' };
+  const INTERVAL_PRESETS = [1000, 2000, 5000, 10000];
+
+  function ago(iso) {
+    if (!iso) return '–';
+    const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+    return s < 60 ? `vor ${s} s` : `vor ${Math.floor(s / 60)} min`;
+  }
+
+  function time(iso) {
+    return iso ? new Date(iso).toLocaleTimeString('de-DE') : '–';
+  }
+
+  function createCard(name) {
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="card-head"><span class="name"></span><span class="status"></span></div>
+      <div class="value">–</div>
+      <dl>
+        <dt>Status</dt><dd class="device-status"></dd>
+        <dt>Gemessen</dt><dd class="measured"></dd>
+        <dt>Zuletzt gesehen</dt><dd class="seen"></dd>
+        <dt>Intervall</dt><dd class="interval"></dd>
+        <dt>Letzter Befehl</dt><dd class="command"></dd>
+      </dl>
+      <section class="commands">
+        <h2>Messintervall ändern</h2>
+        <div class="presets"></div>
+        <form><input type="number" min="1" value="2000" required aria-label="Intervall in ms"><button>Senden</button></form>
+      </section>`;
+    card.querySelector('.name').textContent = name;
+    const presets = card.querySelector('.presets');
+    INTERVAL_PRESETS.forEach(ms => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = `${ms / 1000} s`;
+      button.addEventListener('click', () => sendInterval(name, ms));
+      presets.appendChild(button);
+    });
+    card.querySelector('form').addEventListener('submit', e => {
+      e.preventDefault();
+      sendInterval(name, Number(card.querySelector('input').value));
+    });
+    cards.set(name, card);
+    return card;
+  }
+
+  function render() {
+    document.getElementById('empty').hidden = devices.size > 0;
+    [...devices.keys()].sort().forEach((name, i) => {
+      const d = devices.get(name);
+      const card = cards.get(name) ?? createCard(name);
+      // Move the card only when it is out of place: moving a node in the DOM drops focus from its input.
+      if (container.children[i] !== card) container.insertBefore(card, container.children[i] ?? null);
+      card.classList.toggle('is-offline', !d.online);
+      card.querySelector('.status').innerHTML =
+        `<span class="badge ${d.online ? 'online' : ''}"><span class="dot"></span>${d.online ? 'online' : 'offline'}</span>`;
+      card.querySelector('.value').textContent = d.lastValue != null ? d.lastValue.toFixed(2) : '–';
+      card.querySelector('.device-status').textContent = d.status ?? '–';
+      card.querySelector('.measured').textContent = time(d.measuredAt);
+      card.querySelector('.seen').textContent = ago(d.lastSeenAt);
+      card.querySelector('.interval').textContent = d.intervalMillis != null ? `${d.intervalMillis} ms` : 'unbekannt';
+      const c = d.lastCommand;
+      card.querySelector('.command').innerHTML = c
+        ? `<span class="cmd-${c.status}">${c.description}: ${COMMAND_LABELS[c.status]}</span>`
+          + (c.error ? ` <span class="muted">(${escapeHtml(c.error)})</span>` : '')
+        : '–';
+      card.querySelectorAll('.commands button').forEach(b => b.disabled = !d.online);
+    });
+  }
+
+  async function sendInterval(name, intervalMillis) {
+    showError('');
+    try {
+      const res = await fetch(`/api/devices/${encodeURIComponent(name)}/commands/set-interval`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ intervalMillis }),
+      });
+      if (!res.ok) showError((await res.json()).detail ?? `Fehler ${res.status}`);
+    } catch (e) {
+      showError('Backend nicht erreichbar');
+    }
+  }
+
+  function showError(text) {
+    document.getElementById('error').textContent = text;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  }
+
+  function connect() {
+    const status = document.getElementById('connection');
+    const source = new EventSource('/api/devices/stream');
+    source.onopen = () => status.textContent = 'live';
+    source.onerror = () => status.textContent = 'Verbindung unterbrochen, verbinde neu…';   // EventSource retries on its own
+    source.addEventListener('snapshot', e => {
+      devices.clear();
+      JSON.parse(e.data).forEach(d => devices.set(d.name, d));
+      render();
+    });
+    source.addEventListener('device', e => {
+      const d = JSON.parse(e.data);
+      devices.set(d.name, d);
+      render();
+    });
+  }
+
+  connect();
+  setInterval(render, 1000);   // keeps "zuletzt gesehen" ticking
+</script>
 </body>
 </html>
